@@ -12,8 +12,8 @@ const { google } = require('googleapis');
 // ========== å®æ°ã¨è¨­å® ==========
 const SPREADSHEET_ID_SOURCE = '1UVyeNE9wv5Opany5gpMg5TBOs87LGBvhH-D9EvVl8W0';  // 読み取り専用（みんなのスプレッドシート）
 const SPREADSHEET_ID_RESULTS = '1Esn_gh-BBYFlIHiQTHFSC-AGQA51qCSNBaZ22mOqEyU'; // 結果書き込み用
-const SHEET_NAME_USERS = 'ä¸è¦§';
-const SHEET_NAME_RESULTS = 'çµæ';
+const SHEET_NAME_USERS = '一覧';
+const SHEET_NAME_RESULTS = '結果';
 const USER_COLUMN = 'A';
 const START_ROW = 3; // 3è¡ç®ããéå§
 const BATCH_SIZE = 5; // ä¸åº¦ã«å¦çããã¦ã¼ã¶ã¼æ°
