@@ -13,10 +13,10 @@ const SHEET_NAME_USERS = '一覧';
 const SHEET_NAME_RESULTS = '結果';
 const USER_COLUMN = 'A';
 const START_ROW = 3;
-const BATCH_SIZE = 5;
+const BATCH_SIZE = 10;
 const BATCH_DELAY = 2000;
 const REQUEST_TIMEOUT = 10000;
-const TOTAL_TIMEOUT = 5 * 60 * 1000;
+const TOTAL_TIMEOUT = 25 * 60 * 1000;
 const LIVE_MARKERS = ['room_id', '"isLive":true', 'LiveRoom'];
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -36,7 +36,7 @@ function logError(message) {
 
 function checkTimeout() {
   if (Date.now() - startTime > TOTAL_TIMEOUT) {
-    log('タイムアウト: 5分以上経過。処理を中断します。');
+    log('タイムアウト: 25分以上経過。処理を中断します。');
     return true;
   }
   return false;
