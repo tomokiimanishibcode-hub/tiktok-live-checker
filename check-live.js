@@ -1,26 +1,27 @@
 #!/usr/bin/env node
 
 /**
- * TikTok LIVE チェッカー v2
- * Google Sheets から TikTok ユーザーIDを取得して、
- * TikTok 内部API (api-live/user/room/) を使って LIVE 配信中かどうかを確認し、
- * 結果を Google Sheets に書き込みます。
+ * TikTok LIVE ãã§ãã«ã¼ v2
+ * Google Sheets ãã TikTok ã¦ã¼ã¶ã¼IDãåå¾ãã¦ã
+ * TikTok åé¨API (api-live/user/room/) ãä½¿ã£ã¦ LIVE éä¿¡ä¸­ãã©ãããç¢ºèªãã
+ * çµæã Google Sheets ã«æ¸ãè¾¼ã¿ã¾ãã
  */
 
 const { google } = require('googleapis');
 
-// ========== 定数と設定 ==========
-const SPREADSHEET_ID = '1UVyeNE9wv5Opany5gpMg5TBOs87LGBvhH-D9EvVl8W0';
-const SHEET_NAME_USERS = '一覧';
-const SHEET_NAME_RESULTS = '結果';
+// ========== å®æ°ã¨è¨­å® ==========
+const SPREADSHEET_ID_SOURCE = '1UVyeNE9wv5Opany5gpMg5TBOs87LGBvhH-D9EvVl8W0';  // 読み取り専用（みんなのスプレッドシート）
+const SPREADSHEET_ID_RESULTS = '1Esn_gh-BBYFlIHiQTHFSC-AGQA51qCSNBaZ22mOqEyU'; // 結果書き込み用
+const SHEET_NAME_USERS = 'ä¸è¦§';
+const SHEET_NAME_RESULTS = 'çµæ';
 const USER_COLUMN = 'A';
-const START_ROW = 3; // 3行目から開始
-const BATCH_SIZE = 5; // 一度に処理するユーザー数
-const BATCH_DELAY = 2000; // バッチ間の遅延（ミリ秒）
-const REQUEST_TIMEOUT = 10000; // リクエストのタイムアウト（ミリ秒）
-const TOTAL_TIMEOUT = 25 * 60 * 1000; // 総実行時間の上限（25分）
+const START_ROW = 3; // 3è¡ç®ããéå§
+const BATCH_SIZE = 5; // ä¸åº¦ã«å¦çããã¦ã¼ã¶ã¼æ°
+const BATCH_DELAY = 2000; // ãããéã®éå»¶ï¼ããªç§ï¼
+const REQUEST_TIMEOUT = 10000; // ãªã¯ã¨ã¹ãã®ã¿ã¤ã ã¢ã¦ãï¼ããªç§ï¼
+const TOTAL_TIMEOUT = 25 * 60 * 1000; // ç·å®è¡æéã®ä¸éï¼25åï¼
 
-// TikTok API 設定
+// TikTok API è¨­å®
 const TIKTOK_API_URL = 'https://www.tiktok.com/api-live/user/room/';
 const TIKTOK_API_PARAMS = {
   aid: '1988',
@@ -29,10 +30,10 @@ const TIKTOK_API_PARAMS = {
   sourceType: '54',
 };
 
-// User-Agent を設定（ボット検出回避）
+// User-Agent ãè¨­å®ï¼ãããæ¤åºåé¿ï¼
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-// ========== グローバル変数 ==========
+// ========== ã°ã­ã¼ãã«å¤æ° ==========
 let isTestMode = false;
 let maxUsers = Infinity;
 const startTime = Date.now();
@@ -40,10 +41,10 @@ let processedCount = 0;
 let liveUsers = [];
 let errorCount = 0;
 
-// ========== ユーティリティ関数 ==========
+// ========== ã¦ã¼ãã£ãªãã£é¢æ° ==========
 
 /**
- * ログ出力（タイムスタンプ付き）
+ * ã­ã°åºåï¼ã¿ã¤ã ã¹ã¿ã³ãä»ãï¼
  */
 function log(message) {
   const timestamp = new Date().toISOString();
@@ -51,7 +52,7 @@ function log(message) {
 }
 
 /**
- * エラーログ出力
+ * ã¨ã©ã¼ã­ã°åºå
  */
 function logError(message) {
   const timestamp = new Date().toISOString();
@@ -59,33 +60,33 @@ function logError(message) {
 }
 
 /**
- * 経過時間をチェック
+ * çµéæéããã§ãã¯
  */
 function checkTimeout() {
   const elapsed = Date.now() - startTime;
   if (elapsed > TOTAL_TIMEOUT) {
-    log(`タイムアウト: 25分以上経過しています。処理を中断します。`);
+    log(`ã¿ã¤ã ã¢ã¦ã: 25åä»¥ä¸çµéãã¦ãã¾ããå¦çãä¸­æ­ãã¾ãã`);
     return true;
   }
   return false;
 }
 
 /**
- * 遅延を実装（Promise ベース）
+ * éå»¶ãå®è£ï¼Promise ãã¼ã¹ï¼
  */
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
- * Google Sheets API クライアントを初期化
+ * Google Sheets API ã¯ã©ã¤ã¢ã³ããåæå
  */
 async function initializeGoogleSheetsClient() {
   try {
     const credentialsJson = process.env.GOOGLE_CREDENTIALS;
 
     if (!credentialsJson) {
-      logError('環境変数 GOOGLE_CREDENTIALS が設定されていません');
+      logError('ç°å¢å¤æ° GOOGLE_CREDENTIALS ãè¨­å®ããã¦ãã¾ãã');
       process.exit(1);
     }
 
@@ -98,41 +99,41 @@ async function initializeGoogleSheetsClient() {
 
     return google.sheets({ version: 'v4', auth });
   } catch (error) {
-    logError(`Google Sheets API の初期化に失敗しました: ${error.message}`);
+    logError(`Google Sheets API ã®åæåã«å¤±æãã¾ãã: ${error.message}`);
     process.exit(1);
   }
 }
 
 /**
- * Google Sheets からユーザーリストを取得
+ * Google Sheets ããã¦ã¼ã¶ã¼ãªã¹ããåå¾
  */
 async function fetchUserListFromSheets(sheets) {
   try {
     const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
+      spreadsheetId: SPREADSHEET_ID_SOURCE,
       range: `${SHEET_NAME_USERS}!${USER_COLUMN}${START_ROW}:${USER_COLUMN}`,
     });
 
     const rows = response.data.values || [];
     let users = rows.map(row => row[0]).filter(username => username && username.trim());
 
-    // テストモードの場合は最初のN ユーザーのみ
+    // ãã¹ãã¢ã¼ãã®å ´åã¯æåã®N ã¦ã¼ã¶ã¼ã®ã¿
     if (isTestMode && users.length > maxUsers) {
       users = users.slice(0, maxUsers);
-      log(`テストモード: 最初の${maxUsers}ユーザーのみ処理します`);
+      log(`ãã¹ãã¢ã¼ã: æåã®${maxUsers}ã¦ã¼ã¶ã¼ã®ã¿å¦çãã¾ã`);
     }
 
-    log(`取得されたユーザー数: ${users.length}`);
+    log(`åå¾ãããã¦ã¼ã¶ã¼æ°: ${users.length}`);
     return users;
   } catch (error) {
-    logError(`ユーザーリスト取得エラー: ${error.message}`);
+    logError(`ã¦ã¼ã¶ã¼ãªã¹ãåå¾ã¨ã©ã¼: ${error.message}`);
     throw error;
   }
 }
 
 /**
- * TikTok API を使って LIVE ステータスをチェック
- * api-live/user/room/ エンドポイントを使用
+ * TikTok API ãä½¿ã£ã¦ LIVE ã¹ãã¼ã¿ã¹ããã§ãã¯
+ * api-live/user/room/ ã¨ã³ããã¤ã³ããä½¿ç¨
  */
 async function checkTikTokLiveStatus(username) {
   const params = new URLSearchParams({
@@ -166,24 +167,24 @@ async function checkTikTokLiveStatus(username) {
 
     const data = await response.json();
 
-    // API レスポンスを解析
-    // statusCode: 0 = 成功
+    // API ã¬ã¹ãã³ã¹ãè§£æ
+    // statusCode: 0 = æå
     if (data.statusCode !== 0) {
-      // statusCode が 0 以外の場合、ユーザーが存在しないかエラー
+      // statusCode ã 0 ä»¥å¤ã®å ´åãã¦ã¼ã¶ã¼ãå­å¨ããªããã¨ã©ã¼
       return false;
     }
 
-    // liveRoom が存在し、status が 2 (配信中) であれば LIVE
-    // status: 2 = 配信中, 4 = 配信終了
+    // liveRoom ãå­å¨ããstatus ã 2 (éä¿¡ä¸­) ã§ããã° LIVE
+    // status: 2 = éä¿¡ä¸­, 4 = éä¿¡çµäº
     if (data.data && data.data.liveRoom) {
       const liveStatus = data.data.liveRoom.status;
-      // status 2 = 配信中
+      // status 2 = éä¿¡ä¸­
       if (liveStatus === 2) {
         return true;
       }
-      // status 4 = 配信終了（最近まで配信していた）
-      // それ以外の status も配信中の可能性がある
-      // roomId が存在し、streamData があれば配信中とみなす
+      // status 4 = éä¿¡çµäºï¼æè¿ã¾ã§éä¿¡ãã¦ããï¼
+      // ããä»¥å¤ã® status ãéä¿¡ä¸­ã®å¯è½æ§ããã
+      // roomId ãå­å¨ããstreamData ãããã°éä¿¡ä¸­ã¨ã¿ãªã
       if (liveStatus !== 4 && data.data.user && data.data.user.roomId) {
         return true;
       }
@@ -192,9 +193,9 @@ async function checkTikTokLiveStatus(username) {
     return false;
   } catch (error) {
     if (error.name === 'AbortError') {
-      logError(`${username}: リクエストタイムアウト`);
+      logError(`${username}: ãªã¯ã¨ã¹ãã¿ã¤ã ã¢ã¦ã`);
     } else {
-      logError(`${username}: チェック失敗 - ${error.message}`);
+      logError(`${username}: ãã§ãã¯å¤±æ - ${error.message}`);
     }
     errorCount++;
     return false;
@@ -202,13 +203,13 @@ async function checkTikTokLiveStatus(username) {
 }
 
 /**
- * ユーザーを処理（バッチ単位）
+ * ã¦ã¼ã¶ã¼ãå¦çï¼ãããåä½ï¼
  */
 async function processUsers(users) {
   for (let i = 0; i < users.length; i += BATCH_SIZE) {
-    // タイムアウトチェック
+    // ã¿ã¤ã ã¢ã¦ããã§ãã¯
     if (checkTimeout()) {
-      log(`タイムアウト: ${processedCount}/${users.length} ユーザー処理済み、${liveUsers.length}が LIVE 配信中`);
+      log(`ã¿ã¤ã ã¢ã¦ã: ${processedCount}/${users.length} ã¦ã¼ã¶ã¼å¦çæ¸ã¿ã${liveUsers.length}ã LIVE éä¿¡ä¸­`);
       return;
     }
 
@@ -225,16 +226,16 @@ async function processUsers(users) {
       processedCount++;
       if (isLive) {
         liveUsers.push(username);
-        log(`✓ ${username} は LIVE 配信中です`);
+        log(`â ${username} ã¯ LIVE éä¿¡ä¸­ã§ã`);
       }
     }
 
-    // 100ユーザーごとに進捗表示
+    // 100ã¦ã¼ã¶ã¼ãã¨ã«é²æè¡¨ç¤º
     if (processedCount % 100 === 0 || i + BATCH_SIZE >= users.length) {
-      log(`進捗: ${processedCount}/${users.length} ユーザーをチェック（${liveUsers.length}が LIVE 中、${errorCount}エラー）`);
+      log(`é²æ: ${processedCount}/${users.length} ã¦ã¼ã¶ã¼ããã§ãã¯ï¼${liveUsers.length}ã LIVE ä¸­ã${errorCount}ã¨ã©ã¼ï¼`);
     }
 
-    // バッチ間の遅延
+    // ãããéã®éå»¶
     if (i + BATCH_SIZE < users.length) {
       await delay(BATCH_DELAY);
     }
@@ -242,34 +243,34 @@ async function processUsers(users) {
 }
 
 /**
- * 結果を Google Sheets に書き込み
+ * çµæã Google Sheets ã«æ¸ãè¾¼ã¿
  */
 async function writeResultsToSheets(sheets) {
   try {
-    // "結果" シートをクリア
+    // "çµæ" ã·ã¼ããã¯ãªã¢
     await sheets.spreadsheets.values.clear({
-      spreadsheetId: SPREADSHEET_ID,
+      spreadsheetId: SPREADSHEET_ID_RESULTS,
       range: SHEET_NAME_RESULTS,
     });
 
-    // 結果を作成
+    // çµæãä½æ
     const timestamp = new Date().toISOString();
     const rows = [
-      ['チェック日時', timestamp],
-      ['LIVE 配信中のユーザー数', liveUsers.length],
-      ['チェック済みユーザー数', processedCount],
-      ['エラー数', errorCount],
+      ['ãã§ãã¯æ¥æ', timestamp],
+      ['LIVE éä¿¡ä¸­ã®ã¦ã¼ã¶ã¼æ°', liveUsers.length],
+      ['ãã§ãã¯æ¸ã¿ã¦ã¼ã¶ã¼æ°', processedCount],
+      ['ã¨ã©ã¼æ°', errorCount],
       [''],
-      ['ユーザー名', 'LIVE URL'],
+      ['ã¦ã¼ã¶ã¼å', 'LIVE URL'],
     ];
 
     for (const username of liveUsers) {
       rows.push([username, `https://www.tiktok.com/@${username}/live`]);
     }
 
-    // Google Sheets に書き込み
+    // Google Sheets ã«æ¸ãè¾¼ã¿
     await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
+      spreadsheetId: SPREADSHEET_ID_RESULTS,
       range: `${SHEET_NAME_RESULTS}!A1`,
       valueInputOption: 'USER_ENTERED',
       requestBody: {
@@ -277,49 +278,49 @@ async function writeResultsToSheets(sheets) {
       },
     });
 
-    log(`結果を Google Sheets に書き込みました`);
+    log(`çµæã Google Sheets ã«æ¸ãè¾¼ã¿ã¾ãã`);
   } catch (error) {
-    logError(`結果の書き込みエラー: ${error.message}`);
+    logError(`çµæã®æ¸ãè¾¼ã¿ã¨ã©ã¼: ${error.message}`);
     throw error;
   }
 }
 
-// ========== メイン処理 ==========
+// ========== ã¡ã¤ã³å¦ç ==========
 
 async function main() {
   try {
-    // コマンドライン引数をチェック
+    // ã³ãã³ãã©ã¤ã³å¼æ°ããã§ãã¯
     if (process.argv.includes('--test')) {
       isTestMode = true;
       maxUsers = 50;
-      log('テストモードで実行します');
+      log('ãã¹ãã¢ã¼ãã§å®è¡ãã¾ã');
     }
 
-    log('TikTok LIVE チェッカー v2 (API方式) を開始します');
+    log('TikTok LIVE ãã§ãã«ã¼ v2 (APIæ¹å¼) ãéå§ãã¾ã');
 
-    // Google Sheets API クライアントを初期化
+    // Google Sheets API ã¯ã©ã¤ã¢ã³ããåæå
     const sheets = await initializeGoogleSheetsClient();
-    log('Google Sheets API を初期化しました');
+    log('Google Sheets API ãåæåãã¾ãã');
 
-    // ユーザーリストを取得
+    // ã¦ã¼ã¶ã¼ãªã¹ããåå¾
     const users = await fetchUserListFromSheets(sheets);
 
     if (users.length === 0) {
-      log('チェック対象のユーザーがありません');
+      log('ãã§ãã¯å¯¾è±¡ã®ã¦ã¼ã¶ã¼ãããã¾ãã');
       process.exit(0);
     }
 
-    // ユーザーをチェック
-    log(`${users.length}ユーザーのチェックを開始します（API方式: api-live/user/room/）`);
+    // ã¦ã¼ã¶ã¼ããã§ãã¯
+    log(`${users.length}ã¦ã¼ã¶ã¼ã®ãã§ãã¯ãéå§ãã¾ãï¼APIæ¹å¼: api-live/user/room/ï¼`);
     await processUsers(users);
 
-    // 結果を書き込み
+    // çµæãæ¸ãè¾¼ã¿
     await writeResultsToSheets(sheets);
 
-    log(`チェック完了: ${processedCount}/${users.length} ユーザー、${liveUsers.length}が LIVE 配信中、${errorCount}エラー`);
+    log(`ãã§ãã¯å®äº: ${processedCount}/${users.length} ã¦ã¼ã¶ã¼ã${liveUsers.length}ã LIVE éä¿¡ä¸­ã${errorCount}ã¨ã©ã¼`);
     process.exit(0);
   } catch (error) {
-    logError(`予期しないエラーが発生しました: ${error.message}`);
+    logError(`äºæããªãã¨ã©ã¼ãçºçãã¾ãã: ${error.message}`);
     process.exit(1);
   }
 }
