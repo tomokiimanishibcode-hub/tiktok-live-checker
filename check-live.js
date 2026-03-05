@@ -1,27 +1,26 @@
 #!/usr/bin/env node
-
 /**
- * TikTok LIVE ãã§ãã«ã¼ v2
- * Google Sheets ãã TikTok ã¦ã¼ã¶ã¼IDãåå¾ãã¦ã
- * TikTok åé¨API (api-live/user/room/) ãä½¿ã£ã¦ LIVE éä¿¡ä¸­ãã©ãããç¢ºèªãã
- * çµæã Google Sheets ã«æ¸ãè¾¼ã¿ã¾ãã
+ * TikTok LIVE Checker v2
+ * Reads TikTok user IDs from Google Sheets,
+ * checks LIVE status via TikTok internal API (api-live/user/room/),
+ * and writes results to Google Sheets.
  */
 
 const { google } = require('googleapis');
 
-// ========== å®æ°ã¨è¨­å® ==========
-const SPREADSHEET_ID_SOURCE = '1UVyeNE9wv5Opany5gpMg5TBOs87LGBvhH-D9EvVl8W0';  // 読み取り専用（みんなのスプレッドシート）
-const SPREADSHEET_ID_RESULTS = '1Esn_gh-BBYFlIHiQTHFSC-AGQA51qCSNBaZ22mOqEyU'; // 結果書き込み用
-const SHEET_NAME_USERS = '一覧';
-const SHEET_NAME_RESULTS = '結果';
+// ========== Constants ==========
+const SPREADSHEET_ID_SOURCE = '1UVyeNE9wv5Opany5gpMg5TBOs87LGBvhH-D9EvVl8W0';  // Read-only source
+const SPREADSHEET_ID_RESULTS = '1Esn_gh-BBYFlIHiQTHFSC-AGQA51qCSNBaZ22mOqEyU'; // Results output
+const SHEET_NAME_USERS = '\u4e00\u89a7';
+const SHEET_NAME_RESULTS = '\u7d50\u679c';
 const USER_COLUMN = 'A';
-const START_ROW = 3; // 3è¡ç®ããéå§
-const BATCH_SIZE = 5; // ä¸åº¦ã«å¦çããã¦ã¼ã¶ã¼æ°
-const BATCH_DELAY = 2000; // ãããéã®éå»¶ï¼ããªç§ï¼
-const REQUEST_TIMEOUT = 10000; // ãªã¯ã¨ã¹ãã®ã¿ã¤ã ã¢ã¦ãï¼ããªç§ï¼
-const TOTAL_TIMEOUT = 25 * 60 * 1000; // ç·å®è¡æéã®ä¸éï¼25åï¼
+const START_ROW = 3;
+const BATCH_SIZE = 5;
+const BATCH_DELAY = 2000;
+const REQUEST_TIMEOUT = 10000;
+const TOTAL_TIMEOUT = 25 * 60 * 1000;
 
-// TikTok API è¨­å®
+// TikTok API config
 const TIKTOK_API_URL = 'https://www.tiktok.com/api-live/user/room/';
 const TIKTOK_API_PARAMS = {
   aid: '1988',
@@ -30,10 +29,9 @@ const TIKTOK_API_PARAMS = {
   sourceType: '54',
 };
 
-// User-Agent ãè¨­å®ï¼ãããæ¤åºåé¿ï¼
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-// ========== ã°ã­ã¼ãã«å¤æ° ==========
+// ========== Global variables ==========
 let isTestMode = false;
 let maxUsers = Infinity;
 const startTime = Date.now();
@@ -41,57 +39,40 @@ let processedCount = 0;
 let liveUsers = [];
 let errorCount = 0;
 
-// ========== ã¦ã¼ãã£ãªãã£é¢æ° ==========
+// ========== Utility functions ==========
 
-/**
- * ã­ã°åºåï¼ã¿ã¤ã ã¹ã¿ã³ãä»ãï¼
- */
 function log(message) {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] ${message}`);
 }
 
-/**
- * ã¨ã©ã¼ã­ã°åºå
- */
 function logError(message) {
   const timestamp = new Date().toISOString();
   console.error(`[${timestamp}] ERROR: ${message}`);
 }
 
-/**
- * çµéæéããã§ãã¯
- */
 function checkTimeout() {
   const elapsed = Date.now() - startTime;
   if (elapsed > TOTAL_TIMEOUT) {
-    log(`ã¿ã¤ã ã¢ã¦ã: 25åä»¥ä¸çµéãã¦ãã¾ããå¦çãä¸­æ­ãã¾ãã`);
+    log('Timeout: exceeded 25 minutes. Stopping.');
     return true;
   }
   return false;
 }
 
-/**
- * éå»¶ãå®è£ï¼Promise ãã¼ã¹ï¼
- */
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/**
- * Google Sheets API ã¯ã©ã¤ã¢ã³ããåæå
- */
 async function initializeGoogleSheetsClient() {
   try {
     const credentialsJson = process.env.GOOGLE_CREDENTIALS;
-
     if (!credentialsJson) {
-      logError('ç°å¢å¤æ° GOOGLE_CREDENTIALS ãè¨­å®ããã¦ãã¾ãã');
+      logError('GOOGLE_CREDENTIALS environment variable is not set');
       process.exit(1);
     }
 
     const credentials = JSON.parse(credentialsJson);
-
     const auth = new google.auth.GoogleAuth({
       credentials,
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
@@ -99,14 +80,11 @@ async function initializeGoogleSheetsClient() {
 
     return google.sheets({ version: 'v4', auth });
   } catch (error) {
-    logError(`Google Sheets API ã®åæåã«å¤±æãã¾ãã: ${error.message}`);
+    logError(`Failed to initialize Google Sheets API: ${error.message}`);
     process.exit(1);
   }
 }
 
-/**
- * Google Sheets ããã¦ã¼ã¶ã¼ãªã¹ããåå¾
- */
 async function fetchUserListFromSheets(sheets) {
   try {
     const response = await sheets.spreadsheets.values.get({
@@ -117,29 +95,25 @@ async function fetchUserListFromSheets(sheets) {
     const rows = response.data.values || [];
     let users = rows.map(row => row[0]).filter(username => username && username.trim());
 
-    // ãã¹ãã¢ã¼ãã®å ´åã¯æåã®N ã¦ã¼ã¶ã¼ã®ã¿
     if (isTestMode && users.length > maxUsers) {
       users = users.slice(0, maxUsers);
-      log(`ãã¹ãã¢ã¼ã: æåã®${maxUsers}ã¦ã¼ã¶ã¼ã®ã¿å¦çãã¾ã`);
+      log(`Test mode: processing first ${maxUsers} users only`);
     }
 
-    log(`åå¾ãããã¦ã¼ã¶ã¼æ°: ${users.length}`);
+    log(`Users found: ${users.length}`);
     return users;
   } catch (error) {
-    logError(`ã¦ã¼ã¶ã¼ãªã¹ãåå¾ã¨ã©ã¼: ${error.message}`);
+    logError(`Error fetching user list: ${error.message}`);
     throw error;
   }
 }
 
-/**
- * TikTok API ãä½¿ã£ã¦ LIVE ã¹ãã¼ã¿ã¹ããã§ãã¯
- * api-live/user/room/ ã¨ã³ããã¤ã³ããä½¿ç¨
- */
 async function checkTikTokLiveStatus(username) {
   const params = new URLSearchParams({
     ...TIKTOK_API_PARAMS,
     uniqueId: username,
   });
+
   const url = `${TIKTOK_API_URL}?${params.toString()}`;
 
   try {
@@ -167,24 +141,17 @@ async function checkTikTokLiveStatus(username) {
 
     const data = await response.json();
 
-    // API ã¬ã¹ãã³ã¹ãè§£æ
-    // statusCode: 0 = æå
     if (data.statusCode !== 0) {
-      // statusCode ã 0 ä»¥å¤ã®å ´åãã¦ã¼ã¶ã¼ãå­å¨ããªããã¨ã©ã¼
       return false;
     }
 
-    // liveRoom ãå­å¨ããstatus ã 2 (éä¿¡ä¸­) ã§ããã° LIVE
-    // status: 2 = éä¿¡ä¸­, 4 = éä¿¡çµäº
     if (data.data && data.data.liveRoom) {
       const liveStatus = data.data.liveRoom.status;
-      // status 2 = éä¿¡ä¸­
+
       if (liveStatus === 2) {
         return true;
       }
-      // status 4 = éä¿¡çµäºï¼æè¿ã¾ã§éä¿¡ãã¦ããï¼
-      // ããä»¥å¤ã® status ãéä¿¡ä¸­ã®å¯è½æ§ããã
-      // roomId ãå­å¨ããstreamData ãããã°éä¿¡ä¸­ã¨ã¿ãªã
+
       if (liveStatus !== 4 && data.data.user && data.data.user.roomId) {
         return true;
       }
@@ -193,27 +160,24 @@ async function checkTikTokLiveStatus(username) {
     return false;
   } catch (error) {
     if (error.name === 'AbortError') {
-      logError(`${username}: ãªã¯ã¨ã¹ãã¿ã¤ã ã¢ã¦ã`);
+      logError(`${username}: request timeout`);
     } else {
-      logError(`${username}: ãã§ãã¯å¤±æ - ${error.message}`);
+      logError(`${username}: check failed - ${error.message}`);
     }
     errorCount++;
     return false;
   }
 }
 
-/**
- * ã¦ã¼ã¶ã¼ãå¦çï¼ãããåä½ï¼
- */
 async function processUsers(users) {
   for (let i = 0; i < users.length; i += BATCH_SIZE) {
-    // ã¿ã¤ã ã¢ã¦ããã§ãã¯
     if (checkTimeout()) {
-      log(`ã¿ã¤ã ã¢ã¦ã: ${processedCount}/${users.length} ã¦ã¼ã¶ã¼å¦çæ¸ã¿ã${liveUsers.length}ã LIVE éä¿¡ä¸­`);
+      log(`Timeout: ${processedCount}/${users.length} users processed, ${liveUsers.length} LIVE`);
       return;
     }
 
     const batch = users.slice(i, i + BATCH_SIZE);
+
     const promises = batch.map(username =>
       checkTikTokLiveStatus(username)
         .then(isLive => ({ username, isLive }))
@@ -226,49 +190,41 @@ async function processUsers(users) {
       processedCount++;
       if (isLive) {
         liveUsers.push(username);
-        log(`â ${username} ã¯ LIVE éä¿¡ä¸­ã§ã`);
+        log(`LIVE: ${username}`);
       }
     }
 
-    // 100ã¦ã¼ã¶ã¼ãã¨ã«é²æè¡¨ç¤º
     if (processedCount % 100 === 0 || i + BATCH_SIZE >= users.length) {
-      log(`é²æ: ${processedCount}/${users.length} ã¦ã¼ã¶ã¼ããã§ãã¯ï¼${liveUsers.length}ã LIVE ä¸­ã${errorCount}ã¨ã©ã¼ï¼`);
+      log(`Progress: ${processedCount}/${users.length} checked, ${liveUsers.length} LIVE, ${errorCount} errors`);
     }
 
-    // ãããéã®éå»¶
     if (i + BATCH_SIZE < users.length) {
       await delay(BATCH_DELAY);
     }
   }
 }
 
-/**
- * çµæã Google Sheets ã«æ¸ãè¾¼ã¿
- */
 async function writeResultsToSheets(sheets) {
   try {
-    // "çµæ" ã·ã¼ããã¯ãªã¢
     await sheets.spreadsheets.values.clear({
       spreadsheetId: SPREADSHEET_ID_RESULTS,
       range: SHEET_NAME_RESULTS,
     });
 
-    // çµæãä½æ
     const timestamp = new Date().toISOString();
     const rows = [
-      ['チェック日時', timestamp],
-      ['LIVE配信中のユーザー数', liveUsers.length],
-      ['チェック済みユーザー数', processedCount],
-      ['エラー数', errorCount],
+      ['\u30c1\u30a7\u30c3\u30af\u65e5\u6642', timestamp],
+      ['LIVE\u914d\u4fe1\u4e2d\u306e\u30e6\u30fc\u30b6\u30fc\u6570', liveUsers.length],
+      ['\u30c1\u30a7\u30c3\u30af\u6e08\u307f\u30e6\u30fc\u30b6\u30fc\u6570', processedCount],
+      ['\u30a8\u30e9\u30fc\u6570', errorCount],
       [''],
-      ['ユーザー名', 'LIVE URL'],
+      ['\u30e6\u30fc\u30b6\u30fc\u540d', 'LIVE URL'],
     ];
 
     for (const username of liveUsers) {
       rows.push([username, `https://www.tiktok.com/@${username}/live`]);
     }
 
-    // Google Sheets ã«æ¸ãè¾¼ã¿
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID_RESULTS,
       range: `${SHEET_NAME_RESULTS}!A1`,
@@ -278,49 +234,43 @@ async function writeResultsToSheets(sheets) {
       },
     });
 
-    log(`çµæã Google Sheets ã«æ¸ãè¾¼ã¿ã¾ãã`);
+    log('Results written to Google Sheets');
   } catch (error) {
-    logError(`çµæã®æ¸ãè¾¼ã¿ã¨ã©ã¼: ${error.message}`);
+    logError(`Error writing results: ${error.message}`);
     throw error;
   }
 }
 
-// ========== ã¡ã¤ã³å¦ç ==========
-
+// ========== Main ==========
 async function main() {
   try {
-    // ã³ãã³ãã©ã¤ã³å¼æ°ããã§ãã¯
     if (process.argv.includes('--test')) {
       isTestMode = true;
       maxUsers = 50;
-      log('ãã¹ãã¢ã¼ãã§å®è¡ãã¾ã');
+      log('Running in test mode');
     }
 
-    log('TikTok LIVE ãã§ãã«ã¼ v2 (APIæ¹å¼) ãéå§ãã¾ã');
+    log('TikTok LIVE Checker v2 (API method) starting');
 
-    // Google Sheets API ã¯ã©ã¤ã¢ã³ããåæå
     const sheets = await initializeGoogleSheetsClient();
-    log('Google Sheets API ãåæåãã¾ãã');
+    log('Google Sheets API initialized');
 
-    // ã¦ã¼ã¶ã¼ãªã¹ããåå¾
     const users = await fetchUserListFromSheets(sheets);
 
     if (users.length === 0) {
-      log('ãã§ãã¯å¯¾è±¡ã®ã¦ã¼ã¶ã¼ãããã¾ãã');
+      log('No users to check');
       process.exit(0);
     }
 
-    // ã¦ã¼ã¶ã¼ããã§ãã¯
-    log(`${users.length}ã¦ã¼ã¶ã¼ã®ãã§ãã¯ãéå§ãã¾ãï¼APIæ¹å¼: api-live/user/room/ï¼`);
+    log(`Checking ${users.length} users (API: api-live/user/room/)`);
     await processUsers(users);
 
-    // çµæãæ¸ãè¾¼ã¿
     await writeResultsToSheets(sheets);
 
-    log(`ãã§ãã¯å®äº: ${processedCount}/${users.length} ã¦ã¼ã¶ã¼ã${liveUsers.length}ã LIVE éä¿¡ä¸­ã${errorCount}ã¨ã©ã¼`);
+    log(`Done: ${processedCount}/${users.length} users, ${liveUsers.length} LIVE, ${errorCount} errors`);
     process.exit(0);
   } catch (error) {
-    logError(`äºæããªãã¨ã©ã¼ãçºçãã¾ãã: ${error.message}`);
+    logError(`Unexpected error: ${error.message}`);
     process.exit(1);
   }
 }
