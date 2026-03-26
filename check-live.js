@@ -151,10 +151,6 @@ async function checkTikTokLiveStatus(username) {
       if (liveStatus === 2) {
         return true;
       }
-
-      if (liveStatus !== 4 && data.data.user && data.data.user.roomId) {
-        return true;
-      }
     }
 
     return false;
