@@ -11,9 +11,9 @@ const { google } = require('googleapis');
 // ========== Constants ==========
 const SPREADSHEET_ID_SOURCE = '1UVyeNE9wv5Opany5gpMg5TBOs87LGBvhH-D9EvVl8W0';  // Read-only source
 const SPREADSHEET_ID_RESULTS = '1Esn_gh-BBYFlIHiQTHFSC-AGQA51qCSNBaZ22mOqEyU'; // Results output
-const SHEET_NAME_USERS = '\u4e00\u89a7_\u624b\u52d5\u30ea\u30b9\u30c8\u30a2\u30c3\u30d7';
+const SHEET_NAME_USERS = '\u30ea\u30b9\u30c8\u30a2\u30c3\u30d7\u4e00\u89a7';
 const SHEET_NAME_RESULTS = '\u7d50\u679c';
-const USER_COLUMN = 'A';
+const USER_COLUMN = 'B';
 const START_ROW = 3;
 const BATCH_SIZE = 5;
 const BATCH_DELAY = 2000;
