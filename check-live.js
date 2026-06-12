@@ -94,10 +94,7 @@ async function fetchUserListFromSheets(sheets) {
   // ★ 優先: GASから「チェック対象」リストを取得（他社所属/対象外/削除済/未対応を除外済み）
   //    → チェック数が減り、全員を制限時間内にカバーできる
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
-    const resp = await fetch(`${GAS_URL}?action=getLiveTargets`, { redirect: 'follow', signal: controller.signal });
-    clearTimeout(timeoutId);
+    const resp = await fetch(`${GAS_URL}?action=getLiveTargets`, { redirect: 'follow', signal: AbortSignal.timeout(60000) });
     if (resp.ok) {
       const data = await resp.json();
       if (data.ids && data.ids.length > 0) {
@@ -142,10 +139,7 @@ async function fetchUserListFromSheets(sheets) {
 //    → ダッシュボードを開くだけで最新のLIVE状態が表示される
 async function syncToDashboard() {
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
-    const resp = await fetch(`${GAS_URL}?action=runLiveCheck`, { redirect: 'follow', signal: controller.signal });
-    clearTimeout(timeoutId);
+    const resp = await fetch(`${GAS_URL}?action=runLiveCheck`, { redirect: 'follow', signal: AbortSignal.timeout(90000) });
     const data = await resp.json();
     if (data.liveIds) {
       log(`Dashboard synced: ${data.liveIds.length} LIVE users`);
@@ -166,9 +160,7 @@ async function checkTikTokLiveStatus(username) {
   const url = `${TIKTOK_API_URL}?${params.toString()}`;
 
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
-
+    // AbortSignal.timeout: ボディ読み取り(json())までタイムアウト保護が効く
     const response = await fetch(url, {
       method: 'GET',
       headers: {
@@ -178,13 +170,12 @@ async function checkTikTokLiveStatus(username) {
         'Referer': 'https://www.tiktok.com/',
         'Origin': 'https://www.tiktok.com',
       },
-      signal: controller.signal,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT),
     });
-
-    clearTimeout(timeoutId);
 
     if (!response.ok) {
       logError(`${username}: HTTP ${response.status}`);
+      errorCount++;
       return false;
     }
 
@@ -204,7 +195,7 @@ async function checkTikTokLiveStatus(username) {
 
     return false;
   } catch (error) {
-    if (error.name === 'AbortError') {
+    if (error.name === 'AbortError' || error.name === 'TimeoutError') {
       logError(`${username}: request timeout`);
     } else {
       logError(`${username}: check failed - ${error.message}`);
@@ -325,7 +316,11 @@ async function main() {
       process.exit(0);
     }
 
-    log(`Checking ${users.length} users (API: api-live/user/room/)`);
+    // ★ ローテーション: タイムアウト打ち切り時に毎回同じ末尾ユーザーが未チェックになるのを防ぐ
+    const rot = Math.floor(Math.random() * users.length);
+    users = users.slice(rot).concat(users.slice(0, rot));
+
+    log(`Checking ${users.length} users (API: api-live/user/room/, rotation offset: ${rot})`);
     await processUsers(users);
 
     // ★ 品質ガード: エラー率が高すぎる場合は保存しない（前回の正常データを保持）
