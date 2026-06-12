@@ -14,6 +14,6 @@ jobs:
         env:
           GAS_URL: ${{ secrets.GAS_URL }}
         run: |
-          RESULT=$(curl -sL "${GAS_URL}?action=runProfileCron")
+          RESULT=$(curl -sL "${GAS_URL}?action=runProfileCron&mode=nobio")
           echo "$RESULT"
           echo "$RESULT" | grep -q '"ok":true' || { echo "::error::Profile cron failed"; exit 1; }
