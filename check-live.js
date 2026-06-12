@@ -15,10 +15,13 @@ const SHEET_NAME_USERS = '\u30ea\u30b9\u30c8\u30a2\u30c3\u30d7\u4e00\u89a7';
 const SHEET_NAME_RESULTS = '\u7d50\u679c';
 const USER_COLUMN = 'B';
 const START_ROW = 3;
-const BATCH_SIZE = 5;
-const BATCH_DELAY = 2000;
+const BATCH_SIZE = 15;
+const BATCH_DELAY = 500;
 const REQUEST_TIMEOUT = 10000;
 const TOTAL_TIMEOUT = 25 * 60 * 1000;
+
+// GAS Webアプリ（チェック対象の取得 + 結果のダッシュボード同期に使用）
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbxCBQkUOtfv8LpYdTWy-Lz3vYafGOB-JG8-f6jXCxsKL3u9MyPSLwsfVb8XeVxFfpQJ/exec';
 
 // TikTok API config
 const TIKTOK_API_URL = 'https://www.tiktok.com/api-live/user/room/';
@@ -86,6 +89,31 @@ async function initializeGoogleSheetsClient() {
 }
 
 async function fetchUserListFromSheets(sheets) {
+  // ★ 優先: GASから「チェック対象」リストを取得（他社所属/対象外/削除済/未対応を除外済み）
+  //    → チェック数が減り、全員を制限時間内にカバーできる
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    const resp = await fetch(`${GAS_URL}?action=getLiveTargets`, { redirect: 'follow', signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.ids && data.ids.length > 0) {
+        let users = data.ids;
+        log(`Targets from GAS: ${users.length} (excluded: ${data.excluded || 0} of ${data.total || '?'})`);
+        if (isTestMode && users.length > maxUsers) {
+          users = users.slice(0, maxUsers);
+          log(`Test mode: processing first ${maxUsers} users only`);
+        }
+        return users;
+      }
+    }
+    logError('GAS getLiveTargets returned no data, falling back to sheet read');
+  } catch (error) {
+    logError(`GAS getLiveTargets failed (${error.message}), falling back to sheet read`);
+  }
+
+  // フォールバック: ソースシートを直接読む（除外なし全件）
   try {
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID_SOURCE,
@@ -105,6 +133,25 @@ async function fetchUserListFromSheets(sheets) {
   } catch (error) {
     logError(`Error fetching user list: ${error.message}`);
     throw error;
+  }
+}
+
+// ★ チェック完了後にダッシュボード(A2セル+LIVE履歴)へ自動同期
+//    → ダッシュボードを開くだけで最新のLIVE状態が表示される
+async function syncToDashboard() {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    const resp = await fetch(`${GAS_URL}?action=runLiveCheck`, { redirect: 'follow', signal: controller.signal });
+    clearTimeout(timeoutId);
+    const data = await resp.json();
+    if (data.liveIds) {
+      log(`Dashboard synced: ${data.liveIds.length} LIVE users`);
+    } else {
+      logError(`Dashboard sync unexpected response: ${JSON.stringify(data).slice(0, 200)}`);
+    }
+  } catch (error) {
+    logError(`Dashboard sync failed: ${error.message}`);
   }
 }
 
@@ -262,6 +309,9 @@ async function main() {
     await processUsers(users);
 
     await writeResultsToSheets(sheets);
+
+    // ダッシュボードへ自動同期（失敗しても結果シートには書き込み済み）
+    await syncToDashboard();
 
     log(`Done: ${processedCount}/${users.length} users, ${liveUsers.length} LIVE, ${errorCount} errors`);
     process.exit(0);
