@@ -17,3 +17,12 @@ jobs:
           RESULT=$(curl -sL "${GAS_URL}?action=runProfileCron")
           echo "$RESULT"
           echo "$RESULT" | grep -q '"ok":true' || { echo "::error::Profile cron failed"; exit 1; }
+
+      - name: Append new premium creators to DM sheet
+        env:
+          GAS_URL: ${{ secrets.GAS_URL }}
+        run: |
+          # プロフィール取得後に実行（新規プレミアムのbioが揃った状態で追記）
+          R=$(curl -sL "${GAS_URL}?action=appendNewPremiumDM")
+          echo "$R"
+          echo "$R" | grep -q '"ok":true' || echo "::warning::premium DM append failed (non-fatal)"
