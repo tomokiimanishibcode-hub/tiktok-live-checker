@@ -26,3 +26,7 @@ jobs:
           R=$(curl -sL "${GAS_URL}?action=appendNewPremiumDM")
           echo "$R"
           echo "$R" | grep -q '"ok":true' || echo "::warning::premium DM append failed (non-fatal)"
+          # 新規追加分の💌を除去（GASがバージョン上限で再デプロイできないための回避策）
+          FROM=$(python3 -c "import urllib.parse;print(urllib.parse.quote('吉良💌'))")
+          C=$(curl -sL "${GAS_URL}?action=fixPremiumDMAmount&from=${FROM}&to=%E5%90%89%E8%89%AF")
+          echo "$C"
