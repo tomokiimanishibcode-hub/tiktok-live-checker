@@ -22,11 +22,16 @@ jobs:
         env:
           GAS_URL: ${{ secrets.GAS_URL }}
         run: |
-          # プロフィール取得後に実行（新規プレミアムのbioが揃った状態で追記）
+          # プロフィール取得後に実行（新規プレミアムのbioが揃った状態で追記。文面はbuildRuleDM_が生成＝完成形）
           R=$(curl -sL "${GAS_URL}?action=appendNewPremiumDM")
           echo "$R"
           echo "$R" | grep -q '"ok":true' || echo "::warning::premium DM append failed (non-fatal)"
-          # 新規追加分の💌を除去（GASがバージョン上限で再デプロイできないための回避策）
-          FROM=$(python3 -c "import urllib.parse;print(urllib.parse.quote('吉良💌'))")
-          C=$(curl -sL "${GAS_URL}?action=fixPremiumDMAmount&from=${FROM}&to=%E5%90%89%E8%89%AF")
-          echo "$C"
+
+      - name: Sync free DM sheet (add new T / flag status changes)
+        env:
+          GAS_URL: ${{ secrets.GAS_URL }}
+        run: |
+          # フリーDM管理: 新しくTになった人をLP文面付きで追加＋Tでなくなった人にフラグ（E昇格/A/N/X/R除外）
+          R=$(curl -sL "${GAS_URL}?action=syncFreeDM")
+          echo "$R"
+          echo "$R" | grep -q '"ok":true' || echo "::warning::free DM sync failed (non-fatal)"
