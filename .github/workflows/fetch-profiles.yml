@@ -27,6 +27,15 @@ jobs:
           echo "$R"
           echo "$R" | grep -q '"ok":true' || echo "::warning::premium DM append failed (non-fatal)"
 
+      - name: Reconcile premium DM sheet (flag status changes)
+        env:
+          GAS_URL: ${{ secrets.GAS_URL }}
+        run: |
+          # プレミアムDM管理: ステータス変化をフラグ（T降格→優先度↓、A/N/X/R→送らない）
+          R=$(curl -sL "${GAS_URL}?action=reconcilePremiumDM")
+          echo "$R" | head -c 300; echo ""
+          echo "$R" | grep -q '"ok":true' || echo "::warning::premium DM reconcile failed (non-fatal)"
+
       - name: Sync free DM sheet (add new T / flag status changes)
         env:
           GAS_URL: ${{ secrets.GAS_URL }}
