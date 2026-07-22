@@ -1,0 +1,28 @@
+name: Check TikTok LIVE Status
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+# 重複実行の防止（前のrunが長引いた場合、次は待機。TikTokへの二重アクセスとシート書き込み競合を防ぐ）
+concurrency:
+  group: check-live
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+      - run: npm install
+      - run: node check-live.js
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GAS_URL: ${{ secrets.GAS_URL }}
+          SPREADSHEET_ID_SOURCE: ${{ secrets.SPREADSHEET_ID_SOURCE }}
+          SPREADSHEET_ID_RESULTS: ${{ secrets.SPREADSHEET_ID_RESULTS }}

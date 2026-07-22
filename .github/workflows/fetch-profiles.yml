@@ -1,0 +1,46 @@
+name: Fetch TikTok Profiles
+
+on:
+  schedule:
+    - cron: '0 21 * * *'  # 毎日 6:00 JST
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Call GAS profile cron
+        env:
+          GAS_URL: ${{ secrets.GAS_URL }}
+        run: |
+          RESULT=$(curl -sL "${GAS_URL}?action=runProfileCron")
+          echo "$RESULT"
+          echo "$RESULT" | grep -q '"ok":true' || { echo "::error::Profile cron failed"; exit 1; }
+
+      - name: Append new premium creators to DM sheet
+        env:
+          GAS_URL: ${{ secrets.GAS_URL }}
+        run: |
+          # プロフィール取得後に実行（新規プレミアムのbioが揃った状態で追記。文面はbuildRuleDM_が生成＝完成形）
+          R=$(curl -sL "${GAS_URL}?action=appendNewPremiumDM")
+          echo "$R"
+          echo "$R" | grep -q '"ok":true' || echo "::warning::premium DM append failed (non-fatal)"
+
+      - name: Reconcile premium DM sheet (flag status changes)
+        env:
+          GAS_URL: ${{ secrets.GAS_URL }}
+        run: |
+          # プレミアムDM管理: ステータス変化をフラグ（T降格→優先度↓、A/N/X/R→送らない）
+          R=$(curl -sL "${GAS_URL}?action=reconcilePremiumDM")
+          echo "$R" | head -c 300; echo ""
+          echo "$R" | grep -q '"ok":true' || echo "::warning::premium DM reconcile failed (non-fatal)"
+
+      - name: Sync free DM sheet (add new T / flag status changes)
+        env:
+          GAS_URL: ${{ secrets.GAS_URL }}
+        run: |
+          # フリーDM管理: 新しくTになった人をLP文面付きで追加＋Tでなくなった人にフラグ（E昇格/A/N/X/R除外）
+          R=$(curl -sL "${GAS_URL}?action=syncFreeDM")
+          echo "$R"
+          echo "$R" | grep -q '"ok":true' || echo "::warning::free DM sync failed (non-fatal)"

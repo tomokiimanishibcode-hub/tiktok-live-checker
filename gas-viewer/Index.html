@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+    .container { max-width: 900px; margin: 0 auto; }
+    h1 { text-align: center; color: #333; margin-bottom: 20px; font-size: 24px; }
+    .btn-row { display: flex; gap: 10px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }
+    .btn-live {
+      padding: 15px 40px; background: #fe2c55; color: white; border: none; border-radius: 8px;
+      font-size: 18px; font-weight: bold; cursor: pointer; transition: background 0.3s;
+    }
+    .btn-live:hover { background: #d41e47; }
+    .btn-live:disabled { background: #999; cursor: not-allowed; }
+    .btn-trigger {
+      padding: 15px 30px; background: #1976d2; color: white; border: none; border-radius: 8px;
+      font-size: 16px; font-weight: bold; cursor: pointer; transition: background 0.3s;
+    }
+    .btn-trigger:hover { background: #1565c0; }
+    .btn-trigger:disabled { background: #999; cursor: not-allowed; }
+    .status { padding: 15px; background: white; border-radius: 8px; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .count { font-size: 28px; color: #fe2c55; font-weight: bold; }
+    .time { color: #666; font-size: 14px; margin-top: 5px; }
+    .info { color: #999; font-size: 13px; margin-top: 8px; }
+    table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    th { background: #fe2c55; color: white; padding: 12px; text-align: left; }
+    td { padding: 10px 12px; border-bottom: 1px solid #eee; }
+    tr:hover { background: #fff5f7; }
+    a { color: #1976d2; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .no-live { text-align: center; color: #999; padding: 30px; background: white; border-radius: 8px; }
+    .error { color: red; text-align: center; padding: 15px; }
+    .msg { text-align: center; padding: 10px; margin-bottom: 10px; border-radius: 8px; }
+    .msg-success { background: #e8f5e9; color: #2e7d32; }
+    .msg-error { background: #ffebee; color: #c62828; }
+    .spinner { display: inline-block; width: 20px; height: 20px; border: 3px solid #fff; border-top: 3px solid transparent; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 8px; vertical-align: middle; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>TikTok配信者リスト</h1>
+    <div class="btn-row">
+      <button class="btn-live" id="liveCheckBtn" onclick="loadResults()">最新結果を表示</button>
+      <button class="btn-trigger" id="triggerBtn" onclick="triggerCheck()">今すぐチェック</button>
+    </div>
+    <div id="message"></div>
+    <div id="result"></div>
+  </div>
+
+  <script>
+    // ページ読み込み時に自動的に最新結果を取得
+    window.onload = function() {
+      loadResults();
+    };
+
+    function loadResults() {
+      var btn = document.getElementById('liveCheckBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>読み込み中...';
+      document.getElementById('message').innerHTML = '';
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          btn.disabled = false;
+          btn.textContent = '最新結果を表示';
+
+          if (!result || !result.success) {
+            document.getElementById('result').innerHTML = '<p class="error">' + (result ? result.message : '不明なエラー') + '</p>';
+            return;
+          }
+
+          showResults(result);
+        })
+        .withFailureHandler(function(e) {
+          btn.disabled = false;
+          btn.textContent = '最新結果を表示';
+          document.getElementById('result').innerHTML = '<p class="error">エラー: ' + e.message + '</p>';
+        })
+        .getLatestResults();
+    }
+
+    function showResults(result) {
+      var html = '<div class="status">';
+      html += '<p>LIVE配信中: <span class="count">' + result.liveCount + '人</span></p>';
+      html += '<p class="time">最終チェック: ' + result.checkedAt + '</p>';
+      html += '<p class="info">チェック済み: ' + result.total + '人';
+      if (result.errors > 0) html += ' / エラー: ' + result.errors + '件';
+      html += '</p>';
+      html += '<p class="info">※ GitHub Actionsが30分ごとに自動チェックしています</p>';
+      html += '</div>';
+
+      if (result.liveUsers && result.liveUsers.length > 0) {
+        html += '<table><tr><th>#</th><th>ユーザー名</th><th>LIVE URL</th></tr>';
+        for (var i = 0; i < result.liveUsers.length; i++) {
+          var u = result.liveUsers[i];
+          html += '<tr><td>' + (i + 1) + '</td>';
+          html += '<td>' + u.username + '</td>';
+          html += '<td><a href="' + u.url + '" target="_blank">配信を見る</a></td></tr>';
+        }
+        html += '</table>';
+      } else {
+        html += '<div class="no-live">現在LIVE配信中のユーザーはいません。</div>';
+      }
+
+      document.getElementById('result').innerHTML = html;
+    }
+
+    function triggerCheck() {
+      var btn = document.getElementById('triggerBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>実行中...';
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          btn.disabled = false;
+          btn.textContent = '今すぐチェック';
+
+          var msgDiv = document.getElementById('message');
+          if (result && result.success) {
+            msgDiv.innerHTML = '<div class="msg msg-success">' + result.message + '</div>';
+          } else {
+            msgDiv.innerHTML = '<div class="msg msg-error">' + (result ? result.message : '不明なエラー') + '</div>';
+          }
+        })
+        .withFailureHandler(function(e) {
+          btn.disabled = false;
+          btn.textContent = '今すぐチェック';
+          document.getElementById('message').innerHTML = '<div class="msg msg-error">エラー: ' + e.message + '</div>';
+        })
+        .triggerGitHubActions();
+    }
+  </script>
+</body>
+</html>

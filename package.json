@@ -1,0 +1,13 @@
+{
+  "name": "tiktok-live-checker",
+  "version": "1.0.0",
+  "description": "Check TikTok LIVE streaming status via GitHub Actions",
+  "main": "check-live.js",
+  "scripts": {
+    "check": "node check-live.js",
+    "test": "node check-live.js --test"
+  },
+  "dependencies": {
+    "googleapis": "^131.0.0"
+  }
+}
