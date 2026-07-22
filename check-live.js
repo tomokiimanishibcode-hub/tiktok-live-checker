@@ -23,7 +23,7 @@ const START_ROW = 3;
 const BATCH_SIZE = 8;
 const BATCH_DELAY = 1000;
 const REQUEST_TIMEOUT = 10000;
-const TOTAL_TIMEOUT = 25 * 60 * 1000;
+const TOTAL_TIMEOUT = 27 * 60 * 1000; // フォロワー約790人の監視合流で対象約8,350人に増えたため25→27分（GitHub job上限30分、checkout等の前処理を差し引いても安全圏）
 // エラー率がこれを超えたら結果を保存しない（壊れたデータで上書きしないため）
 const MAX_ERROR_RATE = 0.3;
 const MIN_COVERAGE = 0.9; // ★#34 タイムアウトで打ち切った場合、この割合未満しかチェックできていなければ保存しない（未チェック分をoffline扱いで消さない）
