@@ -53,6 +53,8 @@ const startTime = Date.now();
 let processedCount = 0;
 let liveUsers = [];
 let errorCount = 0;
+let notFoundCount = 0; // ★ user_not_found(削除済みアカウント)。エラーではないが可視化する
+let rateLimitCount = 0; // ★ HTTP403等のレート制限シグナル
 let timedOut = false; // ★#34 タイムアウトで途中打ち切りしたか
 
 // ========== Utility functions ==========
@@ -98,6 +100,37 @@ async function initializeGoogleSheetsClient() {
   } catch (error) {
     logError(`Failed to initialize Google Sheets API: ${error.message}`);
     process.exit(1);
+  }
+}
+
+// ★2026-07-31 分割巡回(シャーディング)
+//   監視対象が9,400人超に増え1回の実行(25分)で全員は回れないため、毎回一定数ずつ区切って
+//   チェックし、次回はその続きから回る。オフセットは結果シートのメタ行に保存する。
+//   未チェックの人は前回のLIVE状態を引き継ぐ(マージ)ため、結果シートの内容は常に全員分になる。
+const SHARD_SIZE = Number(process.env.SHARD_SIZE || 3000);
+const OFFSET_LABEL = '巡回オフセット';
+
+async function readPrevResults(sheets) {
+  try {
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID_RESULTS,
+      range: `${SHEET_NAME_RESULTS}!A1:B20000`,
+    });
+    const rows = resp.data.values || [];
+    let offset = 0;
+    const prevLive = [];
+    let inList = false;
+    for (const r of rows) {
+      const a = (r[0] || '').trim();
+      const b = (r[1] || '').trim();
+      if (a === OFFSET_LABEL) { offset = parseInt(b) || 0; continue; }
+      if (a === 'ユーザー名') { inList = true; continue; } // 「ユーザー名」ヘッダー以降がリスト
+      if (inList && a) prevLive.push(a);
+    }
+    return { offset, prevLive };
+  } catch (e) {
+    logError(`Failed to read previous results (${e.message}), starting from offset 0`);
+    return { offset: 0, prevLive: [] };
   }
 }
 
@@ -185,6 +218,8 @@ async function checkTikTokLiveStatus(username) {
     });
 
     if (!response.ok) {
+      // ★ 403/429はレート制限。適応スロットルの判断材料として別カウントする
+      if (response.status === 403 || response.status === 429) rateLimitCount++;
       logError(`${username}: HTTP ${response.status}`);
       errorCount++;
       return false;
@@ -193,9 +228,13 @@ async function checkTikTokLiveStatus(username) {
     const data = await response.json();
 
     if (data.statusCode !== 0) {
-      // ★#12 statusCode≠0はソフトブロック/一時エラーの可能性。offline確定にせずエラー計上して品質ゲートに乗せる
-      //      （計上しないと大量ソフトブロック時に「全員offline」がエラー率0%で保存され既存LIVEを消してしまう）
-      errorCount++;
+      // ★2026-07-31 修正: user_not_found(19881007)は「アカウント削除/存在しない」という正当な応答であり
+      //   エラーではない。#12で一律エラー計上にした結果、削除済みアカウントが多いリストでエラー率が
+      //   50%超に膨らみ→適応スロットルが常時60秒停止→25分で22%しか処理できず→エラー率30%超で
+      //   保存スキップ、という連鎖でLIVEチェックが数日間まるごと機能停止していた。
+      //   ソフトブロック検知の意図は残すため、user_not_found以外のstatusCodeのみエラー計上する。
+      if (data.statusCode !== 19881007) errorCount++;
+      else notFoundCount++;
       return false;
     }
 
@@ -273,7 +312,7 @@ async function processUsers(users) {
   }
 }
 
-async function writeResultsToSheets(sheets) {
+async function writeResultsToSheets(sheets, checkedUsers, prevLiveUsers, nextOffset) {
   try {
     await sheets.spreadsheets.values.clear({
       spreadsheetId: SPREADSHEET_ID_RESULTS,
@@ -281,16 +320,22 @@ async function writeResultsToSheets(sheets) {
     });
 
     const timestamp = new Date().toISOString();
+    // \u2605 \u30b7\u30e3\u30fc\u30c9\u5916(\u4eca\u56de\u672a\u30c1\u30a7\u30c3\u30af)\u306e\u4eba\u306f\u524d\u56de\u306eLIVE\u72b6\u614b\u3092\u5f15\u304d\u7d99\u304e\u3001\u7d50\u679c\u306f\u5e38\u306b\u5168\u54e1\u5206\u306b\u306a\u308b\u3088\u3046\u30de\u30fc\u30b8\u3059\u308b
+    const checkedSet = new Set(checkedUsers.map(u => u.toLowerCase()));
+    const carried = prevLiveUsers.filter(u => !checkedSet.has(u.toLowerCase()));
+    const merged = [...new Set([...liveUsers, ...carried])];
     const rows = [
       ['\u30c1\u30a7\u30c3\u30af\u65e5\u6642', timestamp],
-      ['LIVE\u914d\u4fe1\u4e2d\u306e\u30e6\u30fc\u30b6\u30fc\u6570', liveUsers.length],
+      ['LIVE\u914d\u4fe1\u4e2d\u306e\u30e6\u30fc\u30b6\u30fc\u6570', merged.length],
       ['\u30c1\u30a7\u30c3\u30af\u6e08\u307f\u30e6\u30fc\u30b6\u30fc\u6570', processedCount],
       ['\u30a8\u30e9\u30fc\u6570', errorCount],
+      ['\u524a\u9664\u6e08\u307f\u30a2\u30ab\u30a6\u30f3\u30c8\u6570', notFoundCount],
+      [OFFSET_LABEL, nextOffset],
       [''],
       ['\u30e6\u30fc\u30b6\u30fc\u540d', 'LIVE URL'],
     ];
 
-    for (const username of liveUsers) {
+    for (const username of merged) {
       rows.push([username, `https://www.tiktok.com/@${username}/live`]);
     }
 
@@ -331,34 +376,44 @@ async function main() {
       process.exit(0);
     }
 
-    // ★ ローテーション: タイムアウト打ち切り時に毎回同じ末尾ユーザーが未チェックになるのを防ぐ
-    const rot = Math.floor(Math.random() * users.length);
-    users = users.slice(rot).concat(users.slice(0, rot));
+    // ★ 分割巡回: 前回の続き(オフセット)からSHARD_SIZE人だけをチェックする
+    const allUsers = users;
+    const N = allUsers.length;
+    const { offset: prevOffset, prevLive: prevLiveUsers } = await readPrevResults(sheets);
+    const size = Math.min(SHARD_SIZE, N);           // 対象が少ない場合は全員（重複させない）
+    const startAt = ((prevOffset % N) + N) % N;
+    const shard = [];
+    for (let i = 0; i < size; i++) shard.push(allUsers[(startAt + i) % N]); // 末尾まで来たら先頭へ回る
+    const nextOffset = (startAt + size) % N;
+    users = shard;
 
-    log(`Checking ${users.length} users (API: api-live/user/room/, rotation offset: ${rot})`);
+    log(`Checking ${users.length}/${allUsers.length} users (shard ${startAt}〜, next offset ${nextOffset}, prev LIVE ${prevLiveUsers.length})`);
     await processUsers(users);
 
     // ★ 品質ガード: エラー率が高すぎる場合は保存しない（前回の正常データを保持）
-    const errorRate = processedCount > 0 ? errorCount / processedCount : 1;
+    //   分母からuser_not_found(正当な応答)を除く＝実際の通信失敗率で判定する
+    const effective = Math.max(1, processedCount - notFoundCount);
+    const errorRate = errorCount / effective;
     if (errorRate > MAX_ERROR_RATE) {
-      log(`SKIPPED write/sync: error rate ${(errorRate * 100).toFixed(0)}% exceeds ${MAX_ERROR_RATE * 100}% — keeping previous good data`);
+      log(`SKIPPED write/sync: error rate ${(errorRate * 100).toFixed(0)}% exceeds ${MAX_ERROR_RATE * 100}% (errors ${errorCount}, rateLimit ${rateLimitCount}, notFound ${notFoundCount}) — keeping previous good data`);
       process.exit(0);
     }
 
-    // ★#34 カバレッジガード: タイムアウトで大半が未チェックのまま部分結果を「全件」として保存すると、
-    //      未チェックのLIVE配信者がoffline扱いで消える。規定割合に満たなければ保存を見送る。
+    // ★#34 カバレッジガード: タイムアウトで大半が未チェックのまま部分結果を保存すると、
+    //      そのシャードのLIVE配信者がoffline扱いで消える。規定割合に満たなければ保存を見送る。
     const coverage = users.length > 0 ? processedCount / users.length : 0;
     if (timedOut && coverage < MIN_COVERAGE) {
-      log(`SKIPPED write/sync: only ${(coverage * 100).toFixed(0)}% checked before timeout (< ${MIN_COVERAGE * 100}%) — keeping previous good data`);
+      log(`SKIPPED write/sync: only ${(coverage * 100).toFixed(0)}% of shard checked before timeout (< ${MIN_COVERAGE * 100}%) — keeping previous good data`);
       process.exit(0);
     }
 
-    await writeResultsToSheets(sheets);
+    // 実際にチェックできた分だけを「今回更新した人」として渡す（タイムアウトで未処理の分は前回状態を維持）
+    await writeResultsToSheets(sheets, users.slice(0, processedCount), prevLiveUsers, nextOffset);
 
     // ダッシュボードへ自動同期（失敗しても結果シートには書き込み済み）
     await syncToDashboard();
 
-    log(`Done: ${processedCount}/${users.length} users, ${liveUsers.length} LIVE, ${errorCount} errors`);
+    log(`Done: ${processedCount}/${users.length} shard users, ${liveUsers.length} LIVE in shard, ${errorCount} errors, ${notFoundCount} notFound, next offset ${nextOffset}`);
     process.exit(0);
   } catch (error) {
     logError(`Unexpected error: ${error.message}`);
