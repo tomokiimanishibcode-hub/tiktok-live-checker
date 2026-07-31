@@ -20,13 +20,18 @@ const SHEET_NAME_USERS = '\u30ea\u30b9\u30c8\u30a2\u30c3\u30d7\u4e00\u89a7';
 const SHEET_NAME_RESULTS = '\u7d50\u679c';
 const USER_COLUMN = 'B';
 const START_ROW = 3;
-const BATCH_SIZE = 8;
-const BATCH_DELAY = 1000;
+// ★2026-07-31 実測: 8並列×1秒(≒8req/s)だと約500件でTikTokにIPブロックされ、以降ほぼ全て403になる
+//   （実機ログ: 993エラー中271が403、400件までは0エラー→その後100%失敗）。
+//   ブロックされてからでは1回の実行が丸ごと無駄になるため、最初から低速で回し切る方針に変更。
+//   2並列×1.5秒 ≒ 1.3req/s。25分で約2,000件を安定処理できる想定。
+const BATCH_SIZE = 2;
+const BATCH_DELAY = 1500;
 const REQUEST_TIMEOUT = 10000;
 const TOTAL_TIMEOUT = 27 * 60 * 1000; // フォロワー約790人の監視合流で対象約8,350人に増えたため25→27分（GitHub job上限30分、checkout等の前処理を差し引いても安全圏）
 // エラー率がこれを超えたら結果を保存しない（壊れたデータで上書きしないため）
-const MAX_ERROR_RATE = 0.3;
-const MIN_COVERAGE = 0.9; // ★#34 タイムアウトで打ち切った場合、この割合未満しかチェックできていなければ保存しない（未チェック分をoffline扱いで消さない）
+// MAX_ERROR_RATEも同様に廃止（極端な全滅時のみ0.9で判定する）
+// ★#34のMIN_COVERAGEは2026-07-31に廃止。分割巡回＋マージで「正常応答が取れた人だけ更新」する設計になり、
+//   未チェック分がoffline扱いで消える事故が構造的に起きなくなったため、部分結果もそのまま保存してよい。
 
 // GAS Webアプリ（チェック対象の取得 + 結果のダッシュボード同期に使用）
 const GAS_URL = process.env.GAS_URL;
@@ -54,6 +59,9 @@ let processedCount = 0;
 let liveUsers = [];
 let errorCount = 0;
 let notFoundCount = 0; // ★ user_not_found(削除済みアカウント)。エラーではないが可視化する
+// ★ 正常に応答が取れた人だけを「チェック済み」とする。403等で応答が取れなかった人を
+//   チェック済み扱いにすると、配信中でも結果から消えてしまう（状態不明≠オフライン）。
+const respondedUsers = [];
 let rateLimitCount = 0; // ★ HTTP403等のレート制限シグナル
 let timedOut = false; // ★#34 タイムアウトで途中打ち切りしたか
 
@@ -72,7 +80,7 @@ function logError(message) {
 function checkTimeout() {
   const elapsed = Date.now() - startTime;
   if (elapsed > TOTAL_TIMEOUT) {
-    log('Timeout: exceeded 25 minutes. Stopping.');
+    log(`Timeout: exceeded ${Math.round(TOTAL_TIMEOUT/60000)} minutes. Stopping.`);
     return true;
   }
   return false;
@@ -107,7 +115,7 @@ async function initializeGoogleSheetsClient() {
 //   監視対象が9,400人超に増え1回の実行(25分)で全員は回れないため、毎回一定数ずつ区切って
 //   チェックし、次回はその続きから回る。オフセットは結果シートのメタ行に保存する。
 //   未チェックの人は前回のLIVE状態を引き継ぐ(マージ)ため、結果シートの内容は常に全員分になる。
-const SHARD_SIZE = Number(process.env.SHARD_SIZE || 3000);
+const SHARD_SIZE = Number(process.env.SHARD_SIZE || 1500); // 低速化(1.3req/s)に合わせて25分で回り切れる量に
 const OFFSET_LABEL = '巡回オフセット';
 
 async function readPrevResults(sheets) {
@@ -234,9 +242,10 @@ async function checkTikTokLiveStatus(username) {
       //   保存スキップ、という連鎖でLIVEチェックが数日間まるごと機能停止していた。
       //   ソフトブロック検知の意図は残すため、user_not_found以外のstatusCodeのみエラー計上する。
       if (data.statusCode !== 19881007) errorCount++;
-      else notFoundCount++;
+      else { notFoundCount++; respondedUsers.push(username); } // 削除済み＝正常応答なのでチェック済み扱い
       return false;
     }
+    respondedUsers.push(username); // statusCode 0 ＝ 正常応答
 
     if (data.data && data.data.liveRoom) {
       const liveStatus = data.data.liveRoom.status;
@@ -272,6 +281,7 @@ async function processUsers(users) {
 
     const batch = users.slice(i, i + BATCH_SIZE);
     const errBefore = errorCount;
+    const rlBefore = rateLimitCount;
 
     const promises = batch.map(username =>
       checkTikTokLiveStatus(username)
@@ -289,12 +299,23 @@ async function processUsers(users) {
       }
     }
 
+    // ★2026-07-31 レート制限(403/429)の即時検知: 一度ブロックされると60秒では解けず、
+    //   実測では以降ほぼ全リクエストが失敗して1回の実行が丸ごと無駄になっていた。
+    //   403を検知したら短い判定を待たずに5分休止＋減速し、回復を待ってから続行する。
+    const rlNow = rateLimitCount;
+    if (rlNow - rlBefore >= 3) {
+      currentDelay = Math.min(currentDelay * 2, 6000);
+      log(`Rate limit hit (403/429 x${rlNow - rlBefore}) — pausing 5min, delay now ${currentDelay}ms`);
+      await delay(300000);
+      recentErrors = 0; recentChecked = 0;
+      continue;
+    }
     // ★ 適応スロットル: 直近100件のエラー率が高ければ60秒休止して減速
     recentErrors += errorCount - errBefore;
     recentChecked += batch.length;
     if (recentChecked >= 100) {
       if (recentErrors / recentChecked > 0.5) {
-        currentDelay = Math.min(currentDelay * 2, 8000);
+        currentDelay = Math.min(currentDelay * 2, 6000);
         log(`Throttle detected (${recentErrors}/${recentChecked} errors) — pausing 60s, delay now ${currentDelay}ms`);
         await delay(60000);
       }
@@ -384,31 +405,30 @@ async function main() {
     const startAt = ((prevOffset % N) + N) % N;
     const shard = [];
     for (let i = 0; i < size; i++) shard.push(allUsers[(startAt + i) % N]); // 末尾まで来たら先頭へ回る
-    const nextOffset = (startAt + size) % N;
     users = shard;
 
-    log(`Checking ${users.length}/${allUsers.length} users (shard ${startAt}〜, next offset ${nextOffset}, prev LIVE ${prevLiveUsers.length})`);
+    log(`Checking ${users.length}/${allUsers.length} users (shard ${startAt}〜, prev LIVE ${prevLiveUsers.length})`);
     await processUsers(users);
 
-    // ★ 品質ガード: エラー率が高すぎる場合は保存しない（前回の正常データを保持）
-    //   分母からuser_not_found(正当な応答)を除く＝実際の通信失敗率で判定する
+    // ★2026-07-31 分割巡回＋マージ導入により、部分結果の保存は安全になった
+    //   （今回チェックできた人だけを更新し、未チェックの人は前回状態をそのまま引き継ぐため
+    //    「未チェック＝オフライン扱いで消える」事故が構造的に起きない）。
+    //   よって従来の「全体エラー率で丸ごと保存スキップ」「カバレッジ90%未満で丸ごと破棄」は廃止。
+    //   ブロックされた回でも進んだ分は必ず前進し、次回はその続きから再開できる。
+    //   ただしエラー率が極端(90%超=ほぼ全滅)なら、その回の結果は信用せず保存しない。
     const effective = Math.max(1, processedCount - notFoundCount);
     const errorRate = errorCount / effective;
-    if (errorRate > MAX_ERROR_RATE) {
-      log(`SKIPPED write/sync: error rate ${(errorRate * 100).toFixed(0)}% exceeds ${MAX_ERROR_RATE * 100}% (errors ${errorCount}, rateLimit ${rateLimitCount}, notFound ${notFoundCount}) — keeping previous good data`);
+    if (errorRate > 0.9) {
+      log(`SKIPPED write/sync: error rate ${(errorRate * 100).toFixed(0)}% — nearly all requests failed (errors ${errorCount}, rateLimit ${rateLimitCount}, notFound ${notFoundCount})`);
       process.exit(0);
     }
 
-    // ★#34 カバレッジガード: タイムアウトで大半が未チェックのまま部分結果を保存すると、
-    //      そのシャードのLIVE配信者がoffline扱いで消える。規定割合に満たなければ保存を見送る。
-    const coverage = users.length > 0 ? processedCount / users.length : 0;
-    if (timedOut && coverage < MIN_COVERAGE) {
-      log(`SKIPPED write/sync: only ${(coverage * 100).toFixed(0)}% of shard checked before timeout (< ${MIN_COVERAGE * 100}%) — keeping previous good data`);
-      process.exit(0);
-    }
+    // ★ オフセットは試行した数だけ進める（タイムアウト分は次回に回る）
+    const nextOffset = (startAt + Math.max(processedCount, 1)) % N;
+    log(`Shard done: attempted ${processedCount}, valid responses ${respondedUsers.length}, next offset ${nextOffset}`);
 
-    // 実際にチェックできた分だけを「今回更新した人」として渡す（タイムアウトで未処理の分は前回状態を維持）
-    await writeResultsToSheets(sheets, users.slice(0, processedCount), prevLiveUsers, nextOffset);
+    // ★ 正常応答が取れた人だけを「更新対象」として渡す。403等で不明だった人は前回状態を維持する
+    await writeResultsToSheets(sheets, respondedUsers, prevLiveUsers, nextOffset);
 
     // ダッシュボードへ自動同期（失敗しても結果シートには書き込み済み）
     await syncToDashboard();
