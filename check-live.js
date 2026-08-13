@@ -118,28 +118,44 @@ async function initializeGoogleSheetsClient() {
 const SHARD_SIZE = Number(process.env.SHARD_SIZE || 1500); // 低速化(1.3req/s)に合わせて25分で回り切れる量に
 const OFFSET_LABEL = '巡回オフセット';
 
+const PREV_READ_RETRIES = 3;
+const PREV_READ_RETRY_DELAY = 5000;
+
 async function readPrevResults(sheets) {
-  try {
-    const resp = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID_RESULTS,
-      range: `${SHEET_NAME_RESULTS}!A1:B20000`,
-    });
-    const rows = resp.data.values || [];
-    let offset = 0;
-    const prevLive = [];
-    let inList = false;
-    for (const r of rows) {
-      const a = (r[0] || '').trim();
-      const b = (r[1] || '').trim();
-      if (a === OFFSET_LABEL) { offset = parseInt(b) || 0; continue; }
-      if (a === 'ユーザー名') { inList = true; continue; } // 「ユーザー名」ヘッダー以降がリスト
-      if (inList && a) prevLive.push(a);
+  // ★ 読取失敗を offset 0 / prevLive [] で握り潰すと、巡回位置が先頭に巻き戻り、
+  //   さらに前回のLIVE中ユーザーが引き継がれず全消しで上書きされる。
+  //   数回リトライし、それでも失敗したら例外を投げて実行ごと中断する
+  //   （シートへ一切書き込まないので、前回状態とオフセットはそのまま保存される）。
+  let resp;
+  for (let attempt = 1; attempt <= PREV_READ_RETRIES; attempt++) {
+    try {
+      resp = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID_RESULTS,
+        range: `${SHEET_NAME_RESULTS}!A1:B20000`,
+      });
+      break;
+    } catch (e) {
+      logError(`Failed to read previous results (attempt ${attempt}/${PREV_READ_RETRIES}): ${e.message}`);
+      if (attempt === PREV_READ_RETRIES) {
+        throw new Error(`Failed to read previous results after ${PREV_READ_RETRIES} attempts: ${e.message}`);
+      }
+      await delay(PREV_READ_RETRY_DELAY);
     }
-    return { offset, prevLive };
-  } catch (e) {
-    logError(`Failed to read previous results (${e.message}), starting from offset 0`);
-    return { offset: 0, prevLive: [] };
   }
+
+  // ここに来たら読取は成功。シートが空(初回)なら offset 0 / prevLive [] を返す（失敗とは区別する）
+  const rows = resp.data.values || [];
+  let offset = 0;
+  const prevLive = [];
+  let inList = false;
+  for (const r of rows) {
+    const a = (r[0] || '').trim();
+    const b = (r[1] || '').trim();
+    if (a === OFFSET_LABEL) { offset = parseInt(b) || 0; continue; }
+    if (a === 'ユーザー名') { inList = true; continue; } // 「ユーザー名」ヘッダー以降がリスト
+    if (inList && a) prevLive.push(a);
+  }
+  return { offset, prevLive };
 }
 
 async function fetchUserListFromSheets(sheets) {
@@ -271,6 +287,7 @@ async function processUsers(users) {
   let currentDelay = BATCH_DELAY;
   let recentErrors = 0;
   let recentChecked = 0;
+  let rlWindow = 0; // ★ 403/429の累積カウント（休止したらリセット）
 
   for (let i = 0; i < users.length; i += BATCH_SIZE) {
     if (checkTimeout()) {
@@ -302,11 +319,18 @@ async function processUsers(users) {
     // ★2026-07-31 レート制限(403/429)の即時検知: 一度ブロックされると60秒では解けず、
     //   実測では以降ほぼ全リクエストが失敗して1回の実行が丸ごと無駄になっていた。
     //   403を検知したら短い判定を待たずに5分休止＋減速し、回復を待ってから続行する。
+    //   ★ 1バッチ内の増分で判定するとBATCH_SIZE=2では最大2しか増えず永久に発火しないため、
+    //     バッチをまたいで累積(rlWindow)し、3件たまった時点で休止する。
     const rlNow = rateLimitCount;
-    if (rlNow - rlBefore >= 3) {
+    rlWindow += rlNow - rlBefore;
+    if (rlWindow >= 3) {
       currentDelay = Math.min(currentDelay * 2, 6000);
-      log(`Rate limit hit (403/429 x${rlNow - rlBefore}) — pausing 5min, delay now ${currentDelay}ms`);
-      await delay(300000);
+      // ★ 休止で残り時間を使い切ると1件も書き込めないまま強制終了になるため、残り時間の半分までに制限する
+      const remaining = TOTAL_TIMEOUT - (Date.now() - startTime);
+      const pauseMs = Math.max(0, Math.min(300000, Math.floor(remaining / 2)));
+      log(`Rate limit hit (403/429 x${rlWindow}) — pausing ${Math.round(pauseMs / 1000)}s, delay now ${currentDelay}ms`);
+      rlWindow = 0;
+      await delay(pauseMs);
       recentErrors = 0; recentChecked = 0;
       continue;
     }
