@@ -2,10 +2,11 @@ name: Keepalive
 
 # 公開リポジトリは60日間コミットが無いと schedule の定期実行が自動停止する
 # （2026-10-13 に check-live / fetch-profiles が disabled_inactivity で止まった）。
-# 毎月1日に空コミットを入れてリポジトリを更新状態に保ち、念のため2本を有効化し直す。
+# 毎週チェックし、最終コミットから30日以上たっていれば空コミットを入れる（60日の間に何度も機会があるので取りこぼしに強い）。
+# 無活動で止まったワークフローだけ有効化し直す（手で止めたもの＝disabled_manually は触らない）。
 on:
   schedule:
-    - cron: '0 0 1 * *'  # 毎月1日 9:00 JST
+    - cron: '23 3 * * 1'  # 毎週月曜 12:23 JST（混み合う毎正時を避ける）
   workflow_dispatch:
 
 permissions:
@@ -18,15 +19,28 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
-      - name: Empty commit
+      - name: Empty commit if last commit is 30+ days old
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit --allow-empty -m "keepalive: $(date -u +%Y-%m-%d)"
-          git push
-      - name: Re-enable scheduled workflows
+          age=$(( $(date +%s) - $(git log -1 --format=%ct) ))
+          if [ "$age" -ge $((30 * 86400)) ]; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit --allow-empty -m "keepalive: $(date -u +%Y-%m-%d)"
+            git push
+          else
+            echo "最終コミットから$((age / 86400))日なので空コミットは不要"
+          fi
+      - name: Re-enable workflows disabled for inactivity
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh workflow enable check-live.yml -R "$GITHUB_REPOSITORY"
-          gh workflow enable fetch-profiles.yml -R "$GITHUB_REPOSITORY"
+          for wf in check-live.yml fetch-profiles.yml; do
+            s=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf" --jq .state)
+            if [ "$s" = "disabled_inactivity" ]; then
+              gh workflow enable "$wf" -R "$GITHUB_REPOSITORY"
+              echo "$wf を再開しました"
+            else
+              echo "$wf: $s（そのまま）"
+            fi
+          done
