@@ -18,8 +18,12 @@ if (!SPREADSHEET_ID_SOURCE || !SPREADSHEET_ID_RESULTS) {
 }
 const SHEET_NAME_USERS = '\u30ea\u30b9\u30c8\u30a2\u30c3\u30d7\u4e00\u89a7';
 const SHEET_NAME_RESULTS = '\u7d50\u679c';
-const USER_COLUMN = 'B';
-const START_ROW = 3;
+// ★2026-10-15 元シート再編: タブ「リストアップ一覧」→「インタビュー」(gid 128410543)。上の SHEET_NAME_USERS（旧タブ名）はもう使わない。
+//   フォールバックはタブを gid → 名前 の順で探し、ID列は見出し「TikTok ID」（完全一致）で探す。見つからなければエラーで止める。
+const SOURCE_TAB_NAME = 'インタビュー'; // gidで見つからない時の予備（タブ名の完全一致）
+const SOURCE_TAB_GID = 128410543;
+const USER_ID_HEADER = 'TikTok ID';
+const HEADER_SCAN_ROWS = 5;
 // ★2026-07-31 実測: 8並列×1秒(≒8req/s)だと約500件でTikTokにIPブロックされ、以降ほぼ全て403になる
 //   （実機ログ: 993エラー中271が403、400件までは0エラー→その後100%失敗）。
 //   ブロックされてからでは1回の実行が丸ごと無駄になるため、最初から低速で回し切る方針に変更。
@@ -182,10 +186,33 @@ async function fetchUserListFromSheets(sheets) {
 
   // フォールバック: ソースシートを直接読む（除外なし全件）
   try {
+    let tab = SOURCE_TAB_NAME;
+    try {
+      const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID_SOURCE, fields: 'sheets.properties(sheetId,title)' });
+      const hit = (meta.data.sheets || []).find(s => s.properties && s.properties.sheetId === SOURCE_TAB_GID);
+      if (hit) tab = hit.properties.title;
+    } catch (e) { /* gidで解決できなければ名前で読む */ }
+    const q = `'${tab.replace(/'/g, "''")}'`;
+    const head = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID_SOURCE,
+      range: `${q}!1:${HEADER_SCAN_ROWS}`,
+    });
+    let headerRow = -1, idColIdx = -1;
+    (head.data.values || []).some((row, r) => {
+      const hits = [];
+      (row || []).forEach((v, c) => { if (String(v).trim() === USER_ID_HEADER) hits.push(c); });
+      if (hits.length > 1) throw new Error(`header "${USER_ID_HEADER}" appears ${hits.length} times in ${tab} row ${r + 1}`);
+      if (hits.length === 1) { headerRow = r + 1; idColIdx = hits[0]; return true; }
+      return false;
+    });
+    if (idColIdx < 0) throw new Error(`header "${USER_ID_HEADER}" not found in ${tab} rows 1-${HEADER_SCAN_ROWS}`);
+    let colA1 = '';
+    for (let k = idColIdx + 1; k > 0; k = Math.floor((k - 1) / 26)) colA1 = String.fromCharCode(65 + ((k - 1) % 26)) + colA1;
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID_SOURCE,
-      range: `${SHEET_NAME_USERS}!${USER_COLUMN}${START_ROW}:${USER_COLUMN}`,
+      range: `${q}!${colA1}${headerRow + 1}:${colA1}`,
     });
+    log(`Fallback source: ${tab} ${colA1}${headerRow + 1}:${colA1}`);
 
     const rows = response.data.values || [];
     let users = rows.map(row => row[0]).filter(username => username && username.trim());
